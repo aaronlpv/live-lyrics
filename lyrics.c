@@ -24,6 +24,30 @@ char usertoken[55];
 
 CURL *curl;
 
+typedef struct lyric {
+    char *str;
+    char min;
+    char sec;
+    char hun;
+    struct lyric *next;
+} lyric;
+
+lyric *make_lyric(char *str, char min, char sec, char hun, lyric *next){
+    lyric *res = (lyric *) malloc(sizeof(lyric));
+    *res = (lyric) {.str = str, .min = min, .sec = sec, .hun = hun, .next = next};
+    return res;
+}
+
+void free_lyric(lyric *l){
+    lyric *next;
+    while(l != NULL){
+        next = l->next;
+        free(l->str);
+        free(l);
+        l = next;
+    }
+}
+
 // Creates a new guid in buf. Apparently this is not how it should be done. But Musixmatch does it this way too, so it's fine.
 void new_guid(char *buf){
     int x;
@@ -154,14 +178,10 @@ void construct_token_query(char *buf){
     sign(buf, len);
 }
 
-// this needs to be cleaned up
 int get_usertoken(){
     char buf[1000];
     string *s = make_string();
-    struct json_object *json_root;
-    struct json_object *json_msg;
-    struct json_object *json_body;
-    struct json_object *json_token;
+    struct json_object *json_root, *json_token;
 
     construct_token_query(buf);
     curl_easy_setopt(curl, CURLOPT_URL, buf);
@@ -170,19 +190,7 @@ int get_usertoken(){
     curl_easy_perform(curl);
 
     json_root = json_tokener_parse(s->str);
-    if(!json_root){
-        return 1;
-    }
-    json_object_object_get_ex(json_root, "message", &json_msg);
-    if(!json_msg){
-        return 1;
-    }
-    json_object_object_get_ex(json_msg, "body", &json_body);
-    if(!json_body){
-        return 1;
-    }
-    json_object_object_get_ex(json_body, "user_token", &json_token);
-    if(!json_token){
+    if(json_pointer_get(json_root, "/message/body/user_token", &json_token)){
         return 1;
     }
 
@@ -231,21 +239,80 @@ void init_lyrics(){
     }
 }
 
-
 void lyrics_cleanup(){
     curl_easy_cleanup(curl);
 }
 
+lyric *get_synced_lyrics(const char *artist, const char *track, const char *album, const char *spot_id, int duration){
+    char buf[1000];
+    struct json_object *json_root, *json_lyrics_root, *json_iter;
+    string *s = make_string();
+    int i, str_len, min, sec, hun;
+    const char *str;
+    char *lyric_str;
+    size_t len;
+    lyric *next = NULL;
+
+    construct_query(buf, artist, track, album, spot_id, duration);
+
+    curl_easy_setopt(curl, CURLOPT_URL, buf);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, s);
+    curl_easy_perform(curl);
+
+    json_root = json_tokener_parse(s->str);
+    free_string(s);
+    if(json_pointer_get(json_root, "/message/body/macro_calls/track.subtitles.get/message/body/subtitle_list/0/subtitle/subtitle_body", &json_iter)){
+        return NULL;
+    }
+
+    json_lyrics_root = json_tokener_parse(json_object_get_string(json_iter));
+
+    json_object_put(json_root);
+
+    len = json_object_array_length(json_lyrics_root);
+
+    for (i = len - 1; i >= 0; i--) {
+        json_root = json_object_array_get_idx(json_lyrics_root, i);
+        json_object_object_get_ex(json_root, "text", &json_iter);
+
+        str = json_object_get_string(json_iter);
+        str_len = strlen(str);
+
+        json_object_object_get_ex(json_root, "time", &json_root);
+        json_object_object_get_ex(json_root, "minutes", &json_iter);
+        min = json_object_get_int(json_iter);
+        json_object_object_get_ex(json_root, "seconds", &json_iter);
+        sec = json_object_get_int(json_iter);
+        json_object_object_get_ex(json_root, "hundredths", &json_iter);
+        hun = json_object_get_int(json_iter);
+
+        lyric_str = (char *) malloc(str_len + 1);
+        strcpy(lyric_str, str);
+
+        next = make_lyric(lyric_str, min, sec, hun, next);
+    }
+
+    json_object_put(json_lyrics_root);
+
+    return next;
+}
+
 int main(){
     init_lyrics();
-    char buf[1000];
 
-    construct_query(buf, "Abel", "Onderweg", "De Stilte Voorbij", "spotify:track:1EtcyegB7JLkAwwqiPyeJ6", 189);
-    printf("%s\n", buf);
-    curl_easy_setopt(curl, CURLOPT_URL, buf);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, stdout);
-    curl_easy_perform(curl);
+    lyric *ly = get_synced_lyrics("Abel", "Onderweg", "De Stilte Voorbij", "spotify:track:1EtcyegB7JLkAwwqiPyeJ6", 189);
+
+    if(ly == NULL){
+        return 1;
+    }
+
+    while(ly != NULL){
+        printf("[%02d:%02d:%02d] %s\n", ly->min, ly->sec, ly->hun, ly->str);
+        ly = ly->next;
+    }
+
+    free_lyric(ly);
     
     lyrics_cleanup();
 }
