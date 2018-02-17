@@ -23,6 +23,7 @@ char guid[37];
 char usertoken[55];
 
 CURL *curl;
+struct curl_slist *headers = NULL;
 
 typedef struct lyric {
     char *str;
@@ -152,7 +153,7 @@ void construct_query(char *buf, const char *artist, const char *track, const cha
     char *album_esc = curl_easy_escape(curl, album, 0);
     char *spot_esc = curl_easy_escape(curl, spot_id, 0);
 
-    sprintf(buf, QUERY, track_esc, artist_esc, artist_esc, album_esc, userblob_id, spot_esc, usertoken, guid);
+    int len = sprintf(buf, QUERY, track_esc, artist_esc, artist_esc, album_esc, userblob_id, spot_esc, usertoken, guid);
 
     free(userblob_id);
 
@@ -161,7 +162,7 @@ void construct_query(char *buf, const char *artist, const char *track, const cha
     curl_free(album_esc);
     curl_free(spot_esc);
     
-    sign(buf, strlen(buf));
+    sign(buf, len);
 }
 void construct_token_query(char *buf){
     time_t timestamp = time(NULL);
@@ -204,7 +205,6 @@ void init_lyrics(){
     char path[1000];
 
     curl = curl_easy_init();
-    struct curl_slist *headers = NULL;
     //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate");
     headers = curl_slist_append(headers, "Connection: keep-alive");
@@ -241,6 +241,7 @@ void init_lyrics(){
 
 void lyrics_cleanup(){
     curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
 }
 
 lyric *get_synced_lyrics(const char *artist, const char *track, const char *album, const char *spot_id, int duration){
@@ -279,6 +280,9 @@ lyric *get_synced_lyrics(const char *artist, const char *track, const char *albu
         str = json_object_get_string(json_iter);
         str_len = strlen(str);
 
+        lyric_str = (char *) malloc(str_len + 1);
+        strcpy(lyric_str, str);
+
         json_object_object_get_ex(json_root, "time", &json_root);
         json_object_object_get_ex(json_root, "minutes", &json_iter);
         min = json_object_get_int(json_iter);
@@ -286,9 +290,6 @@ lyric *get_synced_lyrics(const char *artist, const char *track, const char *albu
         sec = json_object_get_int(json_iter);
         json_object_object_get_ex(json_root, "hundredths", &json_iter);
         hun = json_object_get_int(json_iter);
-
-        lyric_str = (char *) malloc(str_len + 1);
-        strcpy(lyric_str, str);
 
         next = make_lyric(lyric_str, min, sec, hun, next);
     }
@@ -301,15 +302,16 @@ lyric *get_synced_lyrics(const char *artist, const char *track, const char *albu
 int main(){
     init_lyrics();
 
-    lyric *ly = get_synced_lyrics("Abel", "Onderweg", "De Stilte Voorbij", "spotify:track:1EtcyegB7JLkAwwqiPyeJ6", 189);
+    lyric *ly = get_synced_lyrics("Gilbert O'Sullivan", "Alone Again (Naturally)", "Back to Front (Deluxe Edition)", "spotify:track:4lHQCzdK3VdYQvQZnnRouG", 217);
 
     if(ly == NULL){
         return 1;
     }
 
-    while(ly != NULL){
-        printf("[%02d:%02d:%02d] %s\n", ly->min, ly->sec, ly->hun, ly->str);
-        ly = ly->next;
+    lyric *curr = ly;
+    while(curr != NULL){
+        printf("[%02d:%02d:%02d] %s\n", curr->min, curr->sec, curr->hun, curr->str);
+        curr = curr->next;
     }
 
     free_lyric(ly);
