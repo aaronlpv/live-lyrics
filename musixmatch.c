@@ -8,12 +8,15 @@
 #include <ctype.h>
 #include <string.h>
 #include <curl/curl.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
 #include <json-c/json.h>
+#include <unistd.h>
 
 #include "lyrics.h"
 #include "curl_mem.h"
@@ -210,9 +213,32 @@ struct lyric *get_synced_lyrics(const char *artist, const char *track, const cha
     return next;
 }
 
+int write_persistent_file(char *path){
+    FILE *file;
+    // generate a new guid and request a new usertoken
+    new_guid(guid);
+    if(get_usertoken(usertoken)){
+        // if the server doesn't want to respond, there is nothing we can do
+        fprintf(stderr, "Could not get usertoken!\n");
+        exit(1);
+    }
+
+    if((file = fopen(path, "w")) == NULL){
+        return 1;
+    }
+    
+    fputs(guid, file);
+    fputs(usertoken, file);
+    fclose(file);
+    return 0;
+}
+
 void init_lyrics(){
     char path[1000];
     FILE *file;
+    int len;
+
+    srand(time(NULL));
 
     curl = curl_easy_init();
     // replicate Electron headers
@@ -229,43 +255,52 @@ void init_lyrics(){
 
     char *dir = getenv("XDG_CONFIG_HOME");
     if(dir){
-        sprintf(path, "%s/nucleonlyrics/cookies.txt", dir);
+        len = sprintf(path, "%s/nucleonlyrics/", dir);
     }else{
         dir = getenv("HOME");
         if(dir){
-            sprintf(path, "%s/.config/nucleonlyrics/persistent.txt", dir);
-            if(file = fopen(path, "r")){
-                printf("file open\n");
-                if(fgets(guid, 36, file) == NULL){
-                    printf("could not read\n");
-                    fclose(file);
-                    new_guid(guid);
-                    file = fopen(path, "w");
-                    fputs(guid, file);
-                }
-                fclose(file);
-            }else{
-                fprintf(stderr, "Could not open persistent file!");
-                new_guid(guid);
-                    file = fopen(path, "w");
-                    fputs(guid, file);
-                    fclose(file);
-            }
-            sprintf(path, "%s/.config/nucleonlyrics/cookies.txt", dir);
+            len = sprintf(path, "%s/.config/nucleonlyrics/", dir);
         }else{
-            fprintf(stderr, "Can't find cookie file, check your environment variables.");
+            fprintf(stderr, "Can't find cookie file, check your environment variables.\n");
             exit(EXIT_FAILURE);
         }
     }
-    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, path);
-    curl_easy_setopt(curl, CURLOPT_COOKIEJAR, path);
 
-    srand(time(NULL));
-
-    if(get_usertoken(usertoken)){
-        fprintf(stderr, "Could not get usertoken!");
-        exit(1);
+    // Create the nucleonlyrics folder if it does not exist.
+    if (mkdir(path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1){
+        if( errno != EEXIST ) {
+            fprintf(stderr, "Could not create config folder!\n");
+            exit(EXIT_FAILURE);
+        }
     }
+
+    // this next part is quite the mess and needs to be redone
+    sprintf(&path[len], "%s", "persistent.txt");
+    if((file = fopen(path, "r")) != NULL){
+        if(fgets(guid, sizeof(guid), file) == NULL || fgets(usertoken, sizeof(usertoken), file) == NULL){
+            // persistent.txt is corrupted
+            fclose(file);
+            if(write_persistent_file(path)){
+                fprintf(stderr, "Could not overwrite persistent file!\n");
+            }
+        }else{
+            // persistent.txt is valid and we can read everything we need
+            fclose(file);
+            sprintf(&path[len], "%s", "cookies.txt");
+            if(access(path, F_OK) != -1) {
+                // persistent.txt is valid and cookies.txt exists => read cookies
+                curl_easy_setopt(curl, CURLOPT_COOKIEFILE, path);
+            }
+        }
+    }else{
+        // persistent.txt does not exist
+        if(write_persistent_file(path)){
+            fprintf(stderr, "Could not create persistent file!\n");
+            exit(1);
+        }
+    }
+    sprintf(&path[len], "%s", "cookies.txt");
+    curl_easy_setopt(curl, CURLOPT_COOKIEJAR, path);
 }
 
 void lyrics_cleanup(){
@@ -283,9 +318,8 @@ int main(){
     }
 
     struct lyric *curr = ly;
-    printf("%s\n%s\n%s\n", guid, usertoken, curr->str);
     while(curr != NULL){
-        //printf("[%02d:%02d:%02d] %s\n", curr->min, curr->sec, curr->hun, curr->str);
+        printf("[%02d:%02d:%02d] %s\n", curr->min, curr->sec, curr->hun, curr->str);
         curr = curr->next;
     }
 
