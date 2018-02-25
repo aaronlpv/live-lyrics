@@ -3,23 +3,7 @@
  *  - Does make requests to tracking.musixmatch.com or google analytics. (and as such will not retain cookies acquired from these requests)
  *  - Cookies header does not appear as the last header, as it does in the official client.
  */
-#include <time.h>
-#include <stdio.h>
-#include <ctype.h>
-#include <string.h>
-#include <curl/curl.h>
-#include <errno.h>
-#include <sys/stat.h>
-#include <openssl/hmac.h>
-#include <openssl/sha.h>
-#include <openssl/evp.h>
-#include <openssl/bio.h>
-#include <openssl/buffer.h>
-#include <json-c/json.h>
-#include <unistd.h>
-
-#include "lyrics.h"
-#include "curl_mem.h"
+#include "musixmatch.h"
 
 const char GUID_FORMAT[] = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
 const char HEX_ALPHA[] = "0123456789abcdef";
@@ -39,7 +23,7 @@ struct curl_slist *headers = NULL;
 // Creates a new guid in buf. Apparently this is not how it should be done. But Musixmatch does it this way too, so it's fine.
 void new_guid(char *buf){
     int x;
-    for(x = 0; x < sizeof GUID_FORMAT; x++){
+    for(x = 0; x < sizeof(GUID_FORMAT); x++){
         switch(GUID_FORMAT[x]){
             case 'x': buf[x] = HEX_ALPHA[rand() % 16];
                     break;
@@ -94,10 +78,10 @@ void sign(char *buf, size_t len){
 void construct_token_query(char *buf){
     time_t timestamp = time(NULL);
     struct tm *ts = gmtime(&timestamp);
-    char time_buf[sizeof "xxxx-xx-xxTxx:xx:xx.xxxZ"];
-    strftime(time_buf, sizeof time_buf, "%FT%T.732Z", ts);
+    char time_buf[sizeof("xxxx-xx-xxTxx:xx:xx.xxxZ")];
+    strftime(time_buf, sizeof(time_buf), "%FT%T.732Z", ts);
 
-    char *time_esc = curl_easy_escape(curl, time_buf, sizeof time_buf - 1);
+    char *time_esc = curl_easy_escape(curl, time_buf, sizeof(time_buf) - 1);
 
     int len = sprintf(buf, TOKEN_QUERY, guid, time_esc);
 
@@ -163,7 +147,6 @@ struct lyric *get_synced_lyrics(const char *artist, const char *track, const cha
     struct json_object *json_root, *json_lyrics_root, *json_iter;
     struct string *s = make_string();
     int i, str_len, min, sec, hun;
-    const char *str;
     char *lyric_str;
     size_t len;
     struct lyric *next = NULL;
@@ -191,11 +174,8 @@ struct lyric *get_synced_lyrics(const char *artist, const char *track, const cha
         json_root = json_object_array_get_idx(json_lyrics_root, i);
         json_object_object_get_ex(json_root, "text", &json_iter);
 
-        str = json_object_get_string(json_iter);
-        str_len = strlen(str);
-
-        lyric_str = (char *) malloc(str_len + 1);
-        strcpy(lyric_str, str);
+        lyric_str = (char *) malloc(json_object_get_string_len(json_iter) + 1);
+        strcpy(lyric_str, json_object_get_string(json_iter));
 
         json_object_object_get_ex(json_root, "time", &json_root);
         json_object_object_get_ex(json_root, "minutes", &json_iter);
@@ -261,7 +241,7 @@ void init_lyrics(){
         if(dir){
             len = sprintf(path, "%s/.config/nucleonlyrics/", dir);
         }else{
-            fprintf(stderr, "Can't find cookie file, check your environment variables.\n");
+            fprintf(stderr, "Can't find your config folder, check your environment variables.\n");
             exit(EXIT_FAILURE);
         }
     }
@@ -306,24 +286,4 @@ void init_lyrics(){
 void lyrics_cleanup(){
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
-}
-
-int main(){
-    init_lyrics();
-
-    struct lyric *ly = get_synced_lyrics("Gilbert O'Sullivan", "Alone Again (Naturally)", "Back to Front (Deluxe Edition)", "spotify:track:4lHQCzdK3VdYQvQZnnRouG", 217);
-
-    if(ly == NULL){
-        return 1;
-    }
-
-    struct lyric *curr = ly;
-    while(curr != NULL){
-        printf("[%02d:%02d:%02d] %s\n", curr->min, curr->sec, curr->hun, curr->str);
-        curr = curr->next;
-    }
-
-    free_lyric(ly);
-    
-    lyrics_cleanup();
 }
