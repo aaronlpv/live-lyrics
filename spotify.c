@@ -4,9 +4,10 @@
 #include <stdlib.h>
 #include <json-c/json.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "curl_mem.h"
-#include "musixmatch.h"
+#include "spotify.h"
 
 #define OAUTH_LEN 68+1
 #define CSRF_LEN 32+1
@@ -22,24 +23,6 @@ int port = 4381;
 char oauth[OAUTH_LEN];
 char csrf[CSRF_LEN];
 char base_url[1000];
-
-struct spotify_resource{
-  char *name;
-  char *uri;
-};
-
-struct spotify_track{
-  struct spotify_resource *track;
-  struct spotify_resource *artist;
-  struct spotify_resource *album;
-  int length;
-};
-
-struct spotify_playback{
-  struct spotify_track *track;
-  double position;
-  int playing;
-};
 
 void spotify_free_resource(struct spotify_resource *res){
   free(res->name);
@@ -72,7 +55,6 @@ void spotify_command(char *cmd, char *args, struct string *s){
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, s);
   }
   curl_easy_perform(curl);
-  printf("%s\n", s->str);
 }
 
 int get_oauth_token(){
@@ -160,8 +142,9 @@ struct spotify_resource *spotify_json_resource(json_object *root, char *base){
 
 struct spotify_playback *spotify_status(){
   struct string *s = make_string();
-  struct json_object *json_root, *json_res;
+  struct json_object *json_root, *json_res, *json_temp;
   struct spotify_playback *sp;
+  const char *type;
 
   sp = malloc(sizeof(struct spotify_playback));
   sp->track = malloc(sizeof(struct spotify_track));
@@ -169,9 +152,23 @@ struct spotify_playback *spotify_status(){
 
   json_root = json_tokener_parse(s->str);
   json_object_object_get_ex(json_root, "track", &json_res);
-  sp->track->track = spotify_json_resource(json_res, "track_resource");
-  sp->track->artist = spotify_json_resource(json_res, "artist_resource");
-  sp->track->album = spotify_json_resource(json_res, "album_resource");
+  json_object_object_get_ex(json_res, "track_type", &json_temp);
+  type = json_object_get_string(json_temp);
+  if(strcmp(type, "normal") == 0 || strcmp(type, "explicit") == 0){ // explicit is absolutely meaningless
+    sp->track->type = normal;
+    sp->track->track = spotify_json_resource(json_res, "track_resource");
+    sp->track->artist = spotify_json_resource(json_res, "artist_resource");
+    sp->track->album = spotify_json_resource(json_res, "album_resource");
+  }else if(strcmp(type, "ad") == 0){
+    sp->track->type = ad;
+    sp->track->track = NULL;
+    sp->track->artist = NULL;
+    sp->track->album = NULL;
+  }else{
+    fprintf(stderr, "[Spotify] Unknown track type: %s\n", type);
+    exit(1);
+  }
+
   json_object_object_get_ex(json_res, "length", &json_res);
   sp->track->length = json_object_get_int(json_res);
 
@@ -186,7 +183,7 @@ struct spotify_playback *spotify_status(){
   return sp;
 }
 
-int main(){
+/*int main(){
   struct spotify_playback *sp;
   struct lyric *lrc;
 
@@ -195,16 +192,32 @@ int main(){
   //spotify_command("status", "", s); // "&returnon=play,pause,login,logout,error,ap&returnafter=0", s);
 
   sp = spotify_status();
+  if(sp->track->type == ad){
+    printf("Ad is playing...\n");
+    exit(0);
+  }
   printf("Track: %s\n", sp->track->track->name);
   printf("Artist: %s\n", sp->track->artist->name);
   printf("Album: %s\n", sp->track->album->name);
+  printf("%f\n", sp->position);
 
   lrc = get_synced_lyrics(sp->track->artist->name, sp->track->track->name, sp->track->album->name, sp->track->track->uri, sp->track->length);
 
+  time_t past = time(NULL);
+  time_t now;
+  double position = sp->position;
   struct lyric *curr = lrc;
+  int next = curr->min * 60 + curr->sec;
   while(curr != NULL){
+    now = time(NULL);
+    position += now - past;
+    past = now;
+    if(position > next){
       printf("[%02d:%02d:%02d] %s\n", curr->min, curr->sec, curr->hun, curr->str);
       curr = curr->next;
+      next = curr->min * 60 + curr->sec + (curr->hun >= 50 ? 1 : 0);
+    }
+    usleep(100);
   }
 
   free_lyric(lrc);
@@ -212,4 +225,4 @@ int main(){
   lyrics_cleanup();
   spotify_cleanup();
   return 0;
-}
+}*/
