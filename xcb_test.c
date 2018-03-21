@@ -16,6 +16,9 @@
 #define RADIUS 2.0
 #define DEG90 90 * (M_PI/180.0)
 
+#define MOUSE_ALPHA 0.25
+#define DEF_ALPHA 1.0
+
 int win_width = 1000;
 int win_height = 60;
 
@@ -103,7 +106,7 @@ int main(){
             screen->root,
             visual->visual_id);
     
-    unsigned int cw_values[] = { 0, 0, 0, XCB_EVENT_MASK_EXPOSURE, colormap }; //| XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_LEAVE_WINDOW
+    unsigned int cw_values[] = { 0, 0, 0, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_LEAVE_WINDOW, colormap };
     xcb_window_t window = xcb_generate_id(connection);
     cookie = xcb_create_window( connection,                             /* Connection       */
                                 depth->depth,                           /* depth (32 bits)  */
@@ -121,7 +124,7 @@ int main(){
     xcb_intern_atom_cookie_t *EWMHCookie = xcb_ewmh_init_atoms(connection, &EWMH);
     xcb_ewmh_init_atoms_replies(&EWMH, EWMHCookie, NULL);
     // TODO: switch to override?
-    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, window, EWMH._NET_WM_WINDOW_TYPE, XCB_ATOM_ATOM, 32, 1, &(EWMH._NET_WM_WINDOW_TYPE_NOTIFICATION));
+    //xcb_change_property(connection, XCB_PROP_MODE_REPLACE, window, EWMH._NET_WM_WINDOW_TYPE, XCB_ATOM_ATOM, 32, 1, &(EWMH._NET_WM_WINDOW_TYPE_NOTIFICATION));
     xcb_change_property(connection, XCB_PROP_MODE_REPLACE, window, EWMH._NET_WM_STATE, XCB_ATOM_ATOM, 32, 1, &(EWMH._NET_WM_STATE_ABOVE));        
     
     xcb_map_window(connection, window);
@@ -154,44 +157,79 @@ int main(){
         exit(-1);
     }
 
-    struct timespec tp;
+    struct timespec tp, now, last_draw;
     clock_gettime(CLOCK_MONOTONIC, &tp);
     double position = sp->position;
     struct lyric *curr = lrc;
     // TODO: better accuracy
-    long next = curr->next->min * 60 + curr->next->sec;
+    long next = curr->next->min * 60 * 100 + curr->next->sec * 100 + curr->next->hun;
     double alpha = 1.0;
+    int has_mouse = 0;
+    int should_redraw = 1;
 
     xcb_generic_event_t *event;
     while (curr != NULL) {
-        struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        double position_now = position + now.tv_sec - tp.tv_sec;
-        if(position_now > next){
+        /*int diff = (temp.tv_sec - now.tv_sec) * 100 + ((double) temp.tv_nsec - now.tv_nsec) / 1E7;
+        if(diff > 1){
+            printf("%ld\n", diff);
+        }
+        now = temp;*/
+        long position_now = position * 100 + (now.tv_sec - tp.tv_sec) * 100 + ((double) now.tv_nsec - tp.tv_nsec) / 1E7;
+        while(position_now > next){
+            curr = curr->next;
             printf("[%02d:%02d:%02d] %s\n", curr->min, curr->sec, curr->hun, curr->str);
-            next = curr->next->min * 60 + curr->next->sec + (curr->hun >= 40 ? 1 : 0);
+            next = curr->next->min * 60 * 100 + curr->next->sec * 100 + curr->next->hun;
             // TODO: fix segfault at end of song and get next song
+            should_redraw = 1;
+        }
+
+        while( (event = xcb_poll_for_event (connection)) != NULL ){ 
+            switch (event->response_type & ~0x80) {
+                case XCB_ENTER_NOTIFY: {
+                    has_mouse = 1;
+                    break;
+                }
+                case XCB_LEAVE_NOTIFY: {
+                    has_mouse = 0;
+                    break;
+                }
+                case XCB_EXPOSE: {
+                    should_redraw = 1;
+                    break;
+                }
+            }
+        }
+
+        if(has_mouse){
+            if(alpha > MOUSE_ALPHA){
+                alpha *= 0.9;
+                should_redraw = 1;
+            }else{
+                alpha = MOUSE_ALPHA;
+            }
+        }else{
+            if(alpha < DEF_ALPHA){
+                alpha *= 1.1;
+                should_redraw = 1;
+            }else{
+                alpha = DEF_ALPHA;
+            }
+        }
+
+        if(should_redraw){
+            printf("redraw\n");
+            clock_gettime(CLOCK_MONOTONIC, &last_draw);
             xcb_clear_area(connection, 0, window, 0, 0, win_width, win_height);
             redraw(cr, surface, curr->str, alpha);
             xcb_flush(connection);
-            curr = curr->next;
+            should_redraw = 0;
         }
 
-        if( (event = xcb_poll_for_event (connection)) != NULL ){ 
-            switch (event->response_type & ~0x80) {
-            /*case XCB_ENTER_NOTIFY: {
-                break;
-            }
-            case XCB_LEAVE_NOTIFY: {
-                break;
-            }*/
-            case XCB_EXPOSE: {
-                redraw(cr, surface, curr->str, alpha);
-                xcb_flush(connection);
-                usleep(100);
-                break;
-                }
-            }
+        if((has_mouse && alpha != MOUSE_ALPHA) || (!has_mouse && alpha != DEF_ALPHA)){
+            usleep(16667); // 60 fps
+        }else{
+            usleep(130000);
         }
     }
 
