@@ -12,6 +12,9 @@
 #define OAUTH_LEN 68+1
 #define CSRF_LEN 32+1
 
+#define PORT_START 4381
+#define PORT_END 4389
+
 const char local_token[] = "127.0.0.1:%d/simplecsrf/token.json";
 const char local_remote[] = "127.0.0.1:%d/remote/%%s.json?oauth=%s&csrf=%s%%s";
 const char url_spotify[] = "https://open.spotify.com/token";
@@ -19,10 +22,10 @@ const char url_spotify[] = "https://open.spotify.com/token";
 static CURL *curl = NULL;
 static struct curl_slist *curl_headers;
 
-int port = 4381;
+int port = PORT_START;
 char oauth[OAUTH_LEN];
 char csrf[CSRF_LEN];
-char base_url[1000];
+char base_url[sizeof(local_remote) + OAUTH_LEN + CSRF_LEN + 20];
 
 void spotify_free_resource(struct spotify_resource *res){
   free(res->name);
@@ -45,7 +48,10 @@ void spotify_free_playback(struct spotify_playback *pb){
 void spotify_command(char *cmd, char *args, struct string *s){
   char url[1000];
 
-  sprintf(url, base_url, cmd, args);
+  if(snprintf(url, sizeof(url), base_url, cmd, args) >= sizeof(url)){
+    fprintf(stderr, "Spotify cmd: Base URL too long!\n");
+    exit(EXIT_FAILURE);
+  }
   curl_easy_setopt(curl, CURLOPT_URL, url);
   if(s == NULL){
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
@@ -59,34 +65,60 @@ void spotify_command(char *cmd, char *args, struct string *s){
 
 int get_oauth_token(){
   struct string *s = make_string();
-  struct json_object *json_root;
-  struct json_object *json_token;
+  struct json_object *json_root, *json_token;
 
   curl_easy_setopt(curl, CURLOPT_URL, url_spotify);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, s);
 
-  curl_easy_perform(curl);
+  if(curl_easy_perform(curl) != CURLE_OK){
+    free_string(s);
+    return 0;
+  }
 
   json_root = json_tokener_parse(s->str);
-  if(!json_root){
-    return 1;
+  if(json_root == NULL){
+    free_string(s);
+    return 0;
   }
   json_object_object_get_ex(json_root, "t", &json_token);
   strncpy(oauth, json_object_get_string(json_token), sizeof(oauth));
-
+  
   json_object_put(json_root);
   free_string(s);
-  return 0;
+  return 1;
+}
+
+int get_csrf_token(){
+  struct string *s = make_string();
+  struct json_object *json_root, *json_o;
+  char url[1000];
+
+  if(snprintf(url, sizeof(url), local_token, port) >= sizeof(url)){
+    fprintf(stderr, "Spotify init port: URL too long!\n");
+    return 0;
+  }
+
+  curl_easy_setopt(curl, CURLOPT_URL, url);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, s);
+
+  curl_easy_setopt(curl, CURLOPT_URL, url);
+  if(curl_easy_perform(curl) != CURLE_OK){
+    return 0;
+  }
+  json_root = json_tokener_parse(s->str);
+  json_object_object_get_ex(json_root, "token", &json_o);
+  strcpy(csrf, json_object_get_string(json_o));
+  json_object_put(json_root);
+
+  free_string(s);
+  return 1;
 }
 
 
 int spotify_init(){
-  struct string *s = make_string();
-  struct json_object *json_root, *json_o;
-  char url[1000];
   if(curl){
     // already initialized
-    return 0;
+    return 1;
   }
   curl = curl_easy_init();
   curl_headers = curl_slist_append(curl_headers, "Origin: https://open.spotify.com");
@@ -94,28 +126,29 @@ int spotify_init(){
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, curl_headers);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_mem);
 
-  if(get_oauth_token()){
-    fprintf(stderr, "Could not get OAUTH token!");
-    exit(EXIT_FAILURE);
+  /* Spotify apparently picks the first free port in the range 4370 - 4389
+   * I have never seen it pick one in the 70s though
+   */
+  int found;
+  for( ; port <= PORT_END; port++){
+    if( (found = get_csrf_token()) ){
+      printf("Found Spotify at port %d\n", port);
+      break;
+    }
+  }
+  if(!found){
+    fprintf(stderr, "Spotify is not running!\n");
+    return 0;
   }
 
-  free_string(s);
-  s = make_string();
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, s);
-
-  sprintf(url, local_token, port);
-  curl_easy_setopt(curl, CURLOPT_URL, url);
-  curl_easy_perform(curl);
-  json_root = json_tokener_parse(s->str);
-  json_object_object_get_ex(json_root, "token", &json_o);
-  strcpy(csrf, json_object_get_string(json_o));
-  json_object_put(json_root);
-
-  free_string(s);
-
+  if(!get_oauth_token()){
+    fprintf(stderr, "Could not get OAUTH token!\n");
+    return 0;
+  }
+    
   sprintf(base_url, local_remote, port, oauth, csrf);
 
-  return 0;
+  return 1;
 }
 
 void spotify_cleanup(){
@@ -155,18 +188,18 @@ struct spotify_playback *spotify_status(){
   json_object_object_get_ex(json_res, "track_type", &json_temp);
   type = json_object_get_string(json_temp);
   if(strcmp(type, "normal") == 0 || strcmp(type, "explicit") == 0){ // explicit is absolutely meaningless
-    sp->track->type = normal;
+    sp->track->type = Normal;
     sp->track->track = spotify_json_resource(json_res, "track_resource");
     sp->track->artist = spotify_json_resource(json_res, "artist_resource");
     sp->track->album = spotify_json_resource(json_res, "album_resource");
   }else if(strcmp(type, "ad") == 0){
-    sp->track->type = ad;
+    sp->track->type = Ad;
     sp->track->track = NULL;
     sp->track->artist = NULL;
     sp->track->album = NULL;
   }else{
     fprintf(stderr, "[Spotify] Unknown track type: %s\n", type);
-    exit(1);
+    return NULL;
   }
 
   json_object_object_get_ex(json_res, "length", &json_res);
@@ -182,47 +215,3 @@ struct spotify_playback *spotify_status(){
   free_string(s);
   return sp;
 }
-
-/*int main(){
-  struct spotify_playback *sp;
-  struct lyric *lrc;
-
-  spotify_init();
-  init_lyrics();
-  //spotify_command("status", "", s); // "&returnon=play,pause,login,logout,error,ap&returnafter=0", s);
-
-  sp = spotify_status();
-  if(sp->track->type == ad){
-    printf("Ad is playing...\n");
-    exit(0);
-  }
-  printf("Track: %s\n", sp->track->track->name);
-  printf("Artist: %s\n", sp->track->artist->name);
-  printf("Album: %s\n", sp->track->album->name);
-  printf("%f\n", sp->position);
-
-  lrc = get_synced_lyrics(sp->track->artist->name, sp->track->track->name, sp->track->album->name, sp->track->track->uri, sp->track->length);
-
-  time_t past = time(NULL);
-  time_t now;
-  double position = sp->position;
-  struct lyric *curr = lrc;
-  int next = curr->min * 60 + curr->sec;
-  while(curr != NULL){
-    now = time(NULL);
-    position += now - past;
-    past = now;
-    if(position > next){
-      printf("[%02d:%02d:%02d] %s\n", curr->min, curr->sec, curr->hun, curr->str);
-      curr = curr->next;
-      next = curr->min * 60 + curr->sec + (curr->hun >= 50 ? 1 : 0);
-    }
-    usleep(100);
-  }
-
-  free_lyric(lrc);
-  spotify_free_playback(sp);
-  lyrics_cleanup();
-  spotify_cleanup();
-  return 0;
-}*/

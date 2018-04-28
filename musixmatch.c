@@ -27,7 +27,7 @@ void new_guid(char *buf){
         switch(GUID_FORMAT[x]){
             case 'x': buf[x] = HEX_ALPHA[rand() % 16];
                     break;
-            case 'y': buf[x] = HEX_ALPHA[(rand() % 16) & 3U | 8U];
+            case 'y': buf[x] = HEX_ALPHA[ ((rand() % 16) & 3U) | 8U ];
                     break;
             default: buf[x] = GUID_FORMAT[x];
         }
@@ -35,28 +35,29 @@ void new_guid(char *buf){
 }
 
 // https://journal.missiondata.com/how-to-base64-encode-with-c-c-and-openssl-acccb1045c42
-char *base64_encode(const unsigned char *in, int in_len){
-  BIO *bmem, *b64;
-  BUF_MEM *bptr;
+char *base64_encode(const char *in, int in_len){
+    BIO *bmem, *b64;
+    BUF_MEM *bptr;
 
-  b64 = BIO_new(BIO_f_base64());
-  bmem = BIO_new(BIO_s_mem());
-  b64 = BIO_push(b64, bmem);
-  BIO_write(b64, in, in_len);
-  BIO_flush(b64);
-  BIO_get_mem_ptr(b64, &bptr);
+    b64 = BIO_new(BIO_f_base64());
+    BIO_set_flags(b64,BIO_FLAGS_BASE64_NO_NL);
+    bmem = BIO_new(BIO_s_mem());
+    b64 = BIO_push(b64, bmem);
+    BIO_write(b64, in, in_len);
+    BIO_flush(b64);
+    BIO_get_mem_ptr(b64, &bptr);
 
-  char *buff = (char *)malloc(bptr->length);
-  memcpy(buff, bptr->data, bptr->length-1);
-  buff[bptr->length-1] = 0;
+    char *buff = (char *)malloc(bptr->length);
+    memcpy(buff, bptr->data, bptr->length-1);
+    buff[bptr->length-1] = '\0';
 
-  BIO_free_all(b64);
+    BIO_free_all(b64);
 
-  return buff;
+    return buff;
 }
 
-void sign(char *buf, size_t len){
-    int base64_len;
+void sign(unsigned char *buf, size_t len){
+    unsigned int base64_len;
     char *base64_sig = NULL;
     char base64_buf[EVP_MAX_MD_SIZE];
 
@@ -118,12 +119,12 @@ void construct_query(char *buf, const char *artist, const char *track, const cha
     char *userblob_id;
     char *c = base64_src;
 
-    sprintf(base64_src, "%s_%s_%d", track, artist, duration);
+    int leng = sprintf(base64_src, "%s_%s_%d", track, artist, duration);
     while(*c){
         *c = tolower(*c);
         c++;
     }
-    userblob_id = base64_encode(base64_src, strlen(base64_src));
+    userblob_id = base64_encode((unsigned char *)base64_src, strlen(base64_src));
 
     char *artist_esc = curl_easy_escape(curl, artist, 0);
     char *track_esc = curl_easy_escape(curl, track, 0);
@@ -142,11 +143,11 @@ void construct_query(char *buf, const char *artist, const char *track, const cha
     sign(buf, len);
 }
 
-struct lyric *get_synced_lyrics(const char *artist, const char *track, const char *album, const char *spot_id, int duration){
+struct lyric *mxm_get_synced_lyrics(const char *artist, const char *track, const char *album, const char *spot_id, int duration){
     char buf[1000];
     struct json_object *json_root, *json_lyrics_root, *json_iter;
     struct string *s = make_string();
-    int i, str_len, min, sec, hun;
+    int i, min, sec, hun;
     char *lyric_str;
     size_t len;
     struct lyric *next = NULL;
@@ -156,10 +157,22 @@ struct lyric *get_synced_lyrics(const char *artist, const char *track, const cha
     curl_easy_setopt(curl, CURLOPT_URL, buf);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_mem);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, s);
-    curl_easy_perform(curl);
+    if(curl_easy_perform(curl) != CURLE_OK){
+        printf("bad request!\n");
+        free_string(s);
+        return 0;
+    }
 
     json_root = json_tokener_parse(s->str);
     free_string(s);
+    if(json_pointer_get(json_root, "/message/body/macro_calls/track.lyrics.get/message/body/lyrics/restricted", &json_iter)){
+        printf("error!\n");
+        return NULL;
+    }
+    if(json_object_get_int(json_iter) != 0){
+        printf("Unauthorised to show lyrics!\n");
+        return NULL;
+    }
     if(json_pointer_get(json_root, "/message/body/macro_calls/track.subtitles.get/message/body/subtitle_list/0/subtitle/subtitle_body", &json_iter)){
         return NULL;
     }
@@ -213,7 +226,7 @@ int write_persistent_file(char *path){
     return 0;
 }
 
-void init_lyrics(){
+void mxm_init(){
     char path[1000];
     FILE *file;
     int len;
@@ -283,7 +296,7 @@ void init_lyrics(){
     curl_easy_setopt(curl, CURLOPT_COOKIEJAR, path);
 }
 
-void lyrics_cleanup(){
+void mxm_cleanup(){
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
 }

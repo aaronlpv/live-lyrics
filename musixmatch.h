@@ -19,10 +19,10 @@
 #include "lyrics.h"
 #include "curl_mem.h"
 
-struct lyric *get_synced_lyrics(const char *artist, const char *track, const char *album, const char *spot_id, int duration);
+struct lyric *mxm_get_synced_lyrics(const char *artist, const char *track, const char *album, const char *spot_id, int duration);
 
-void init_lyrics();
+void mxm_init();
 
-void lyrics_cleanup();
+void mxm_cleanup();
 
 #endif 

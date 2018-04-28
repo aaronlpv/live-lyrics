@@ -1,11 +1,10 @@
 #ifndef __spotify
 #define __spotify
 
+#include <stdio.h>
+#include <string.h>
+#include <curl/curl.h>
 #include <malloc.h>
-
-enum track_type{
-  normal, ad
-};
 
 struct spotify_resource{
   char *name;
@@ -16,7 +15,7 @@ struct spotify_track{
   struct spotify_resource *track;
   struct spotify_resource *artist;
   struct spotify_resource *album;
-  enum track_type type;
+  enum {Normal, Ad} type;
   int length;
 };
 
